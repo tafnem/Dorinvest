@@ -13,24 +13,17 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 import config
 
-# --- НАСТРОЙКА ЛОГОВ ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# --- ПЕРЕМЕННЫЕ ---
 app = Flask(__name__)
 user_cache = {}
 stop_monitoring = False
 
-# ============================================================
-# 1. РАБОТА С GOOGLE ТАБЛИЦЕЙ
-# ============================================================
-
 def get_google_client():
-    """Подключение к Google Sheets"""
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive"
@@ -47,17 +40,14 @@ def get_google_client():
         raise
 
 def get_sheet():
-    """Получить лист таблицы"""
     client = get_google_client()
     return client.open_by_key(config.SPREADSHEET_ID).worksheet(config.WORKSHEET_NAME)
 
 def get_all_employees():
-    """Загрузить всех сотрудников из таблицы"""
     sheet = get_sheet()
     return sheet.get_all_records()
 
 def find_employee_by_phone(phone):
-    """Найти сотрудника по номеру телефона"""
     records = get_all_employees()
     clean_phone = re.sub(r'\D', '', str(phone))
     
@@ -68,7 +58,6 @@ def find_employee_by_phone(phone):
     return None
 
 def update_user_id_in_sheet(phone, user_id):
-    """Обновить user_id в таблице"""
     try:
         sheet = get_sheet()
         clean_phone = re.sub(r'\D', '', str(phone))
@@ -94,7 +83,6 @@ def update_user_id_in_sheet(phone, user_id):
         return False
 
 def get_employee_status(phone):
-    """Проверить статус сотрудника"""
     employee = find_employee_by_phone(phone)
     if employee:
         return (
@@ -104,12 +92,7 @@ def get_employee_status(phone):
         )
     return None, None, None
 
-# ============================================================
-# 2. РАБОТА С API MAX
-# ============================================================
-
 def send_message(user_id, text):
-    """Отправить сообщение пользователю"""
     url = "https://platform-api2.max.ru/messages"
     headers = {
         "Authorization": config.MAX_BOT_TOKEN,
@@ -130,7 +113,6 @@ def send_message(user_id, text):
         return False
 
 def add_user_to_chat(user_id, name=""):
-    """Добавить пользователя в чат"""
     url = f"https://platform-api2.max.ru/chats/{config.CHAT_ID}/members"
     headers = {
         "Authorization": config.MAX_BOT_TOKEN,
@@ -148,7 +130,6 @@ def add_user_to_chat(user_id, name=""):
         return False
 
 def remove_user_from_chat(user_id, name=""):
-    """Исключить пользователя из чата"""
     url = f"https://platform-api2.max.ru/chats/{config.CHAT_ID}/members"
     headers = {
         "Authorization": config.MAX_BOT_TOKEN,
@@ -171,12 +152,7 @@ def remove_user_from_chat(user_id, name=""):
         logger.error(f"❌ Ошибка: {e}")
         return False
 
-# ============================================================
-# 3. ЛОГИКА БОТА
-# ============================================================
-
 def process_start(user_id, phone):
-    """Обработка команды /start"""
     logger.info(f"🔄 Регистрация {user_id}, телефон: {phone}")
     
     status, existing_user_id, name = get_employee_status(phone)
@@ -201,7 +177,6 @@ def process_start(user_id, phone):
         send_message(user_id, f"❌ Неизвестный статус: {status}")
 
 def check_terminated():
-    """Проверка уволенных сотрудников"""
     logger.info("🔍 Проверка уволенных...")
     
     try:
@@ -226,7 +201,6 @@ def check_terminated():
         logger.error(f"❌ Ошибка проверки: {e}")
 
 def monitoring_loop():
-    """Фоновый мониторинг"""
     logger.info("🔄 Мониторинг запущен")
     while not stop_monitoring:
         try:
@@ -236,13 +210,8 @@ def monitoring_loop():
         time.sleep(config.CHECK_INTERVAL)
     logger.info("🛑 Мониторинг остановлен")
 
-# ============================================================
-# 4. WEBHOOK ОБРАБОТЧИК (Flask)
-# ============================================================
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обработка вебхука от MAX"""
     try:
         data = request.json
         logger.info(f"📨 Вебхук получен")
@@ -271,19 +240,13 @@ def webhook():
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Проверка здоровья"""
     return jsonify({
         "status": "ok",
         "time": datetime.now().isoformat(),
         "cache": len(user_cache)
     }), 200
 
-# ============================================================
-# 5. ЗАПУСК
-# ============================================================
-
 def load_cache():
-    """Загрузка кеша при старте"""
     try:
         records = get_all_employees()
         count = 0
