@@ -1,42 +1,36 @@
-# bot.py
 import logging
 import time
 import threading
 import re
 import json
+import os
 from datetime import datetime
 
 import gspread
 import requests
 from flask import Flask, request, jsonify
 from oauth2client.service_account import ServiceAccountCredentials
-from gspread.exceptions import WorksheetNotFound, CellNotFound
 
 import config
 
-# --- НАСТРОЙКА ЛОГИРОВАНИЯ ---
+# --- НАСТРОЙКА ЛОГОВ ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler()
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
-# Кеш соответствия номеров и user_id
-user_cache = {}
-# Флаг остановки мониторинга
-stop_monitoring = False
-# Flask приложение
+# --- ПЕРЕМЕННЫЕ ---
 app = Flask(__name__)
+user_cache = {}
+stop_monitoring = False
 
-# --- 1. РАБОТА С GOOGLE TABLES ---
+# ============================================================
+# 1. РАБОТА С GOOGLE ТАБЛИЦЕЙ
+# ============================================================
 
 def get_google_client():
-    """Получение клиента для работы с Google Sheets."""
+    """Подключение к Google Sheets"""
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive"
@@ -46,34 +40,26 @@ def get_google_client():
             'credentials.json', scope
         )
         client = gspread.authorize(creds)
-        logger.info("✅ Авторизация в Google Sheets успешна")
+        logger.info("✅ Google Sheets подключена")
         return client
     except Exception as e:
-        logger.error(f"❌ Ошибка авторизации Google Sheets: {e}")
+        logger.error(f"❌ Ошибка Google: {e}")
         raise
 
 def get_sheet():
-    """Получение рабочего листа таблицы."""
+    """Получить лист таблицы"""
     client = get_google_client()
-    try:
-        sheet = client.open_by_key(config.SPREADSHEET_ID).worksheet(config.WORKSHEET_NAME)
-        return sheet
-    except Exception as e:
-        logger.error(f"❌ Ошибка открытия таблицы: {e}")
-        raise
+    return client.open_by_key(config.SPREADSHEET_ID).worksheet(config.WORKSHEET_NAME)
 
-def get_employee_data():
-    """Загрузка всех данных сотрудников."""
+def get_all_employees():
+    """Загрузить всех сотрудников из таблицы"""
     sheet = get_sheet()
-    records = sheet.get_all_records()
-    logger.info(f"📊 Загружено {len(records)} записей из таблицы")
-    return records
+    return sheet.get_all_records()
 
-def find_employee_by_phone(phone_number):
-    """Поиск сотрудника по номеру телефона."""
-    records = get_employee_data()
-    # Очищаем номер от лишних символов
-    clean_phone = re.sub(r'\D', '', str(phone_number))
+def find_employee_by_phone(phone):
+    """Найти сотрудника по номеру телефона"""
+    records = get_all_employees()
+    clean_phone = re.sub(r'\D', '', str(phone))
     
     for record in records:
         record_phone = re.sub(r'\D', '', str(record.get('Номер телефона', '')))
@@ -81,49 +67,49 @@ def find_employee_by_phone(phone_number):
             return record
     return None
 
-def update_user_id(phone_number, user_id):
-    """Обновление user_id в таблице."""
+def update_user_id_in_sheet(phone, user_id):
+    """Обновить user_id в таблице"""
     try:
         sheet = get_sheet()
-        # Ищем номер телефона в колонке B (2)
-        cell = sheet.find(re.sub(r'\D', '', str(phone_number)), in_column=2)
+        clean_phone = re.sub(r'\D', '', str(phone))
         
-        if cell:
-            # Находим колонку user_id по заголовку
-            headers = sheet.row_values(1)
-            try:
-                user_id_col = headers.index('user_id') + 1
-                sheet.update_cell(cell.row, user_id_col, str(user_id))
-                logger.info(f"✅ Обновлен user_id для {phone_number} -> {user_id}")
-                
-                # Обновляем кеш
-                clean_phone = re.sub(r'\D', '', str(phone_number))
-                user_cache[clean_phone] = str(user_id)
-                return True
-            except ValueError:
-                logger.error("❌ В таблице нет колонки 'user_id'")
-                return False
-        else:
-            logger.warning(f"⚠️ Номер {phone_number} не найден в таблице")
+        cell = sheet.find(clean_phone, in_column=2)
+        if not cell:
+            logger.warning(f"⚠️ Номер {phone} не найден")
             return False
+        
+        headers = sheet.row_values(1)
+        try:
+            col = headers.index('user_id') + 1
+            sheet.update_cell(cell.row, col, str(user_id))
+            logger.info(f"✅ user_id обновлен: {phone} -> {user_id}")
+            user_cache[clean_phone] = str(user_id)
+            return True
+        except ValueError:
+            logger.error("❌ В таблице нет колонки 'user_id'")
+            return False
+            
     except Exception as e:
-        logger.error(f"❌ Ошибка обновления user_id: {e}")
+        logger.error(f"❌ Ошибка обновления: {e}")
         return False
 
-def check_employee_status(phone_number):
-    """Проверка статуса сотрудника."""
-    employee = find_employee_by_phone(phone_number)
+def get_employee_status(phone):
+    """Проверить статус сотрудника"""
+    employee = find_employee_by_phone(phone)
     if employee:
-        status = employee.get('Статус', '').strip()
-        user_id = employee.get('user_id', '')
-        name = employee.get('ФИО', '')
-        return status, user_id, name
+        return (
+            employee.get('Статус', '').strip(),
+            employee.get('user_id', ''),
+            employee.get('ФИО', '')
+        )
     return None, None, None
 
-# --- 2. РАБОТА С API MAX ---
+# ============================================================
+# 2. РАБОТА С API MAX
+# ============================================================
 
 def send_message(user_id, text):
-    """Отправка сообщения пользователю."""
+    """Отправить сообщение пользователю"""
     url = "https://platform-api2.max.ru/messages"
     headers = {
         "Authorization": config.MAX_BOT_TOKEN,
@@ -137,98 +123,89 @@ def send_message(user_id, text):
     try:
         response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()
-        logger.info(f"📤 Сообщение отправлено пользователю {user_id}")
+        logger.info(f"📤 Сообщение отправлено {user_id}")
         return True
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Ошибка отправки сообщения: {e}")
-        if hasattr(e, 'response') and e.response:
-            logger.error(f"Ответ сервера: {e.response.text}")
-        return False
-
-def remove_user_from_chat(user_id, name=""):
-    """Исключение пользователя из чата."""
-    url = f"https://platform-api2.max.ru/chats/{config.CHAT_ID}/members"
-    headers = {
-        "Authorization": config.MAX_BOT_TOKEN,
-        "Content-Type": "application/json"
-    }
-    params = {
-        "user_id": str(user_id)
-    }
-    
-    try:
-        response = requests.delete(url, headers=headers, params=params)
-        
-        if response.status_code == 200:
-            logger.info(f"✅ Пользователь {name} (ID: {user_id}) исключен из чата")
-            return True
-        elif response.status_code == 404:
-            logger.warning(f"⚠️ Пользователь {user_id} уже не в чате")
-            return True
-        else:
-            logger.error(f"❌ Ошибка исключения: {response.status_code} - {response.text}")
-            return False
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Ошибка API: {e}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки: {e}")
         return False
 
 def add_user_to_chat(user_id, name=""):
-    """Добавление пользователя в чат."""
+    """Добавить пользователя в чат"""
     url = f"https://platform-api2.max.ru/chats/{config.CHAT_ID}/members"
     headers = {
         "Authorization": config.MAX_BOT_TOKEN,
         "Content-Type": "application/json"
     }
-    payload = {
-        "user_id": str(user_id)
-    }
+    payload = {"user_id": str(user_id)}
     
     try:
         response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()
-        logger.info(f"✅ Пользователь {name} (ID: {user_id}) добавлен в чат")
+        logger.info(f"✅ {name} добавлен в чат")
         return True
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Ошибка добавления в чат: {e}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка добавления: {e}")
         return False
 
-# --- 3. ЛОГИКА БОТА ---
-
-def process_start_command(user_id, phone_number):
-    """Обработка команды /start."""
-    logger.info(f"🔄 Обработка /start от {user_id}, номер: {phone_number}")
+def remove_user_from_chat(user_id, name=""):
+    """Исключить пользователя из чата"""
+    url = f"https://platform-api2.max.ru/chats/{config.CHAT_ID}/members"
+    headers = {
+        "Authorization": config.MAX_BOT_TOKEN,
+        "Content-Type": "application/json"
+    }
+    params = {"user_id": str(user_id)}
     
-    # Проверяем статус
-    status, existing_user_id, name = check_employee_status(phone_number)
+    try:
+        response = requests.delete(url, headers=headers, params=params)
+        if response.status_code == 200:
+            logger.info(f"✅ {name} исключен из чата")
+            return True
+        elif response.status_code == 404:
+            logger.warning(f"⚠️ {user_id} уже не в чате")
+            return True
+        else:
+            logger.error(f"❌ Ошибка: {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        return False
+
+# ============================================================
+# 3. ЛОГИКА БОТА
+# ============================================================
+
+def process_start(user_id, phone):
+    """Обработка команды /start"""
+    logger.info(f"🔄 Регистрация {user_id}, телефон: {phone}")
+    
+    status, existing_user_id, name = get_employee_status(phone)
     
     if not status:
-        send_message(user_id, "❌ Ваш номер не найден в системе. Доступ запрещен.")
+        send_message(user_id, "❌ Номер не найден в системе")
         return
     
     if status.lower() == "уволен":
-        send_message(user_id, "🚫 Ваш доступ отключен. Обратитесь к администратору.")
+        send_message(user_id, "🚫 Доступ запрещен")
         return
     
     if status.lower() == "работает":
-        # Обновляем user_id
-        if update_user_id(phone_number, user_id):
-            # Добавляем в чат
+        if update_user_id_in_sheet(phone, user_id):
             if add_user_to_chat(user_id, name):
-                send_message(user_id, f"✅ Добро пожаловать, {name}! Доступ к рабочему чату открыт.")
+                send_message(user_id, f"✅ Добро пожаловать, {name}!")
             else:
-                send_message(user_id, "⚠️ Доступ предоставлен, но возникла ошибка добавления в чат. Обратитесь к администратору.")
+                send_message(user_id, "⚠️ Доступ открыт, но ошибка добавления в чат")
         else:
-            send_message(user_id, "❌ Ошибка регистрации. Обратитесь к администратору.")
+            send_message(user_id, "❌ Ошибка регистрации")
     else:
-        send_message(user_id, f"❌ Неизвестный статус '{status}'. Обратитесь к администратору.")
+        send_message(user_id, f"❌ Неизвестный статус: {status}")
 
-def check_terminated_employees():
-    """Проверка уволенных сотрудников."""
-    logger.info("🔍 Проверка уволенных сотрудников...")
+def check_terminated():
+    """Проверка уволенных сотрудников"""
+    logger.info("🔍 Проверка уволенных...")
     
     try:
-        records = get_employee_data()
-        terminated_found = False
+        records = get_all_employees()
         
         for record in records:
             phone = re.sub(r'\D', '', str(record.get('Номер телефона', '')))
@@ -236,93 +213,79 @@ def check_terminated_employees():
             user_id = record.get('user_id', '')
             name = record.get('ФИО', '')
             
-            # Если сотрудник уволен и есть user_id
             if status.lower() == "уволен" and user_id:
-                # Проверяем, не исключили ли мы его уже
                 if phone in user_cache and user_cache[phone] == str(user_id):
-                    # Исключаем из чата
                     if remove_user_from_chat(user_id, name):
-                        # Удаляем из кеша
                         del user_cache[phone]
-                        terminated_found = True
                 else:
-                    # Если нет в кеше, добавляем и исключаем
                     user_cache[phone] = str(user_id)
                     if remove_user_from_chat(user_id, name):
                         del user_cache[phone]
-                        terminated_found = True
-        
-        if not terminated_found:
-            logger.info("✅ Уволенные сотрудники не обнаружены")
-            
+                        
     except Exception as e:
-        logger.error(f"❌ Ошибка проверки уволенных: {e}")
+        logger.error(f"❌ Ошибка проверки: {e}")
 
 def monitoring_loop():
-    """Фоновый цикл мониторинга."""
-    logger.info("🔄 Запущен фоновый мониторинг")
-    
+    """Фоновый мониторинг"""
+    logger.info("🔄 Мониторинг запущен")
     while not stop_monitoring:
         try:
-            check_terminated_employees()
+            check_terminated()
         except Exception as e:
-            logger.error(f"❌ Ошибка в цикле мониторинга: {e}")
-        
+            logger.error(f"❌ Ошибка: {e}")
         time.sleep(config.CHECK_INTERVAL)
-    
     logger.info("🛑 Мониторинг остановлен")
 
-# --- 4. WEBHOOK ОБРАБОТЧИК ---
+# ============================================================
+# 4. WEBHOOK ОБРАБОТЧИК (Flask)
+# ============================================================
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обработка вебхука от MAX."""
+    """Обработка вебхука от MAX"""
     try:
         data = request.json
-        logger.info(f"📨 Получен вебхук: {json.dumps(data, ensure_ascii=False)}")
+        logger.info(f"📨 Вебхук получен")
         
-        # Проверяем, что это сообщение
         if 'message' in data:
-            message = data['message']
-            text = message.get('text', '')
-            user_id = message.get('user_id')
+            msg = data['message']
+            text = msg.get('text', '')
+            user_id = msg.get('user_id')
             
-            logger.info(f"💬 Сообщение от {user_id}: {text}")
-            
-            # Обработка команды /start
             if text and text.startswith('/start'):
-                # Извлекаем номер телефона
                 parts = text.split()
                 if len(parts) > 1:
-                    phone_number = parts[1]
-                    # Запускаем обработку в отдельном потоке, чтобы не блокировать ответ
+                    phone = parts[1]
                     threading.Thread(
-                        target=process_start_command,
-                        args=(user_id, phone_number)
+                        target=process_start,
+                        args=(user_id, phone)
                     ).start()
                 else:
-                    send_message(user_id, "📱 Пожалуйста, укажите номер телефона: /start 79001234567")
+                    send_message(user_id, "📱 Укажите номер: /start 79001234567")
         
         return jsonify({"status": "ok"}), 200
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка обработки вебхука: {e}")
+        logger.error(f"❌ Ошибка: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Проверка работоспособности."""
+    """Проверка здоровья"""
     return jsonify({
         "status": "ok",
-        "timestamp": datetime.now().isoformat(),
-        "cache_size": len(user_cache)
+        "time": datetime.now().isoformat(),
+        "cache": len(user_cache)
     }), 200
 
-# --- 5. ЗАПУСК ---
+# ============================================================
+# 5. ЗАПУСК
+# ============================================================
 
 def load_cache():
-    """Загрузка кеша при старте."""
+    """Загрузка кеша при старте"""
     try:
-        records = get_employee_data()
+        records = get_all_employees()
         count = 0
         for record in records:
             phone = re.sub(r'\D', '', str(record.get('Номер телефона', '')))
@@ -330,44 +293,16 @@ def load_cache():
             if phone and user_id:
                 user_cache[phone] = str(user_id)
                 count += 1
-        logger.info(f"✅ Загружено {count} записей в кеш")
+        logger.info(f"✅ Загружено {count} записей")
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки кеша: {e}")
 
-def setup_webhook():
-    """Настройка вебхука в MAX."""
-    url = "https://platform-api2.max.ru/webhooks"
-    headers = {
-        "Authorization": config.MAX_BOT_TOKEN,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "url": config.WEBHOOK_URL
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code == 200:
-            logger.info(f"✅ Вебхук настроен: {config.WEBHOOK_URL}")
-            return True
-        else:
-            logger.error(f"❌ Ошибка настройки вебхука: {response.status_code} - {response.text}")
-            return False
-    except Exception as e:
-        logger.error(f"❌ Ошибка настройки вебхука: {e}")
-        return False
-
 if __name__ == "__main__":
-    # Загружаем кеш
     load_cache()
     
-    # Настраиваем вебхук
-    setup_webhook()
-    
-    # Запускаем мониторинг в фоновом потоке
     monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
     monitor_thread.start()
     
-    # Запускаем Flask сервер
-    logger.info(f"🚀 Бот запущен на порту {config.PORT}")
-    app.run(host='0.0.0.0', port=config.PORT)
+    port = int(os.environ.get("PORT", 3000))
+    logger.info(f"🚀 Бот запущен на порту {port}")
+    app.run(host='0.0.0.0', port=port)
