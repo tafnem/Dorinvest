@@ -1,29 +1,30 @@
-# config.py
 import os
+from dotenv import load_dotenv
 
-# === НАСТРОЙКИ MAX ===
-# Токен бота из MAX (раздел Интеграция)
-MAX_BOT_TOKEN = "f9LHodD0cOLoNWzZmiwaarGx87HmGGSW1TThS-gfJpzPxJ2ieDBvguGwdXsTncoplRBPHgbQONoOD0VFtOvC"
+load_dotenv()
 
-# ID чата (группы), откуда будем исключать
-# Для групповых чатов ID обычно отрицательный
-CHAT_ID = -78013816902930
+# Токен бота MAX
+BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 
-# === НАСТРОЙКИ GOOGLE TABLES ===
-# ID таблицы (из URL: https://docs.google.com/spreadsheets/d/ЭТОТ_ID)
-SPREADSHEET_ID = "1ldc6Nat5YlrH8KuLPFLTpEbdk-bGBn-hzy_pm6wO8x8/edit?gid=0#gid=0"
+# ID рабочей группы
+WORK_CHAT_ID = os.getenv("WORK_CHAT_ID")
 
-# Имя листа в таблице
-WORKSHEET_NAME = "Сотрудники"
+# Настройки Google Sheets
+GOOGLE_SHEETS_CREDENTIALS = os.getenv("GOOGLE_SHEETS_CREDENTIALS", "credentials.json")
+SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Сотрудники")
 
-# === НАСТРОЙКИ СКРИПТА ===
-# Интервал проверки таблицы (в секундах)
-CHECK_INTERVAL = 60
+# Индексы колонок в таблице (начинаются с 1)
+COL_PHONE = 1      # Номер телефона
+COL_NAME = 2       # ФИО
+COL_STATUS = 3     # Статус (Работает/Уволен)
+COL_USER_ID = 4    # user_id (технический)
 
-# === НАСТРОЙКИ WEBHOOK ===
-# URL, куда MAX будет отправлять обновления
-# Для локальной разработки используй ngrok или аналоги
-WEBHOOK_URL = "https://ваш-сервер.ngrok.io/webhook"
+# Статусы сотрудников
+STATUS_ACTIVE = "Работает"
+STATUS_INACTIVE = "Уволен"
 
-# Порт для Flask-сервера
-PORT = 5000
+# Проверка обязательных переменных
+if not BOT_TOKEN:
+    raise ValueError("❌ MAX_BOT_TOKEN не найден в .env файле!")
+if not WORK_CHAT_ID:
+    raise ValueError("❌ WORK_CHAT_ID не найден в .env файле!")
